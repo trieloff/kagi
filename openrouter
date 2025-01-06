@@ -1,0 +1,60 @@
+#!/bin/bash
+source "${XDG_CONFIG_HOME:-$HOME/.config}/kagi/config"
+
+# Default model
+MODEL="deepseek/deepseek-chat"
+
+# Parse arguments for --model
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --model)
+            MODEL="$2"
+            shift 2
+            ;;
+        *)
+            # Collect remaining args for query
+            if [ -z "$QUERY_ARGS" ]; then
+                QUERY_ARGS="$1"
+            else
+                QUERY_ARGS="$QUERY_ARGS $1"
+            fi
+            shift
+            ;;
+    esac
+done
+
+# Check if there's input on stdin (pipe)
+if [ ! -t 0 ]; then
+    QUERY=$(cat | jq -R -s .)
+else
+    QUERY=$(printf '%s' "$QUERY_ARGS" | jq -R -s .)
+fi
+
+# Exit if no query provided
+if [ -z "$QUERY" ]; then
+    echo "Error: No query provided. Either pipe input or provide arguments." >&2
+    exit 1
+fi
+
+curl -s https://openrouter.ai/api/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+  --data "$(jq -n --arg q "${QUERY//\"}" --arg m "$MODEL" '{
+    "model": $m,
+    "messages": [
+      {
+        "role": "user",
+        "content": $q
+      }
+    ]
+  }')" | \
+  jq -r '
+    if .choices then
+      .choices[0].message.content
+    elif .data then
+      .data.output
+    else
+      "Error: Unexpected response format"
+    end
+  ' | \
+  bat --paging=never --style=plain -l markdown
