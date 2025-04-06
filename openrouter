@@ -1,15 +1,50 @@
 #!/bin/bash
-source "${XDG_CONFIG_HOME:-$HOME/.config}/kagi/config"
 
-# Default model
-MODEL="deepseek/deepseek-chat"
+# Check if config file exists before sourcing
+CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/kagi/config"
+if [ -f "$CONFIG_FILE" ]; then
+    source "$CONFIG_FILE"
+fi
 
-# Parse arguments for --model
+# Default models
+OPENROUTER_DEFAULT="deepseek/deepseek-chat"
+OLLAMA_DEFAULT="qwq:latest"
+OLLAMA_FAST="wizardlm2"
+OLLAMA_REASON="deepseek-r1:70b"
+
+# Initial model selection based on API key availability
+if [ -z "$OPENROUTER_API_KEY" ]; then
+    USE_OLLAMA=true
+    MODEL="$OLLAMA_DEFAULT"
+else
+    USE_OLLAMA=false
+    MODEL="$OPENROUTER_DEFAULT"
+fi
+
+# Parse arguments for model selection and other options
+SHOW_MODEL=false
+
 while [[ $# -gt 0 ]]; do
     case $1 in
         --model)
             MODEL="$2"
             shift 2
+            ;;
+        --fast)
+            if [ "$USE_OLLAMA" = true ]; then
+                MODEL="$OLLAMA_FAST"
+            fi
+            shift
+            ;;
+        --reason)
+            if [ "$USE_OLLAMA" = true ]; then
+                MODEL="$OLLAMA_REASON"
+            fi
+            shift
+            ;;
+        --show-model)
+            SHOW_MODEL=true
+            shift
             ;;
         *)
             # Collect remaining args for query
@@ -25,9 +60,9 @@ done
 
 # Check if there's input on stdin (pipe)
 if [ ! -t 0 ]; then
-    QUERY=$(cat | jq -R -s .)
+    QUERY=$(cat)
 else
-    QUERY=$(printf '%s' "$QUERY_ARGS" | jq -R -s .)
+    QUERY="$QUERY_ARGS"
 fi
 
 # Exit if no query provided
@@ -36,25 +71,79 @@ if [ -z "$QUERY" ]; then
     exit 1
 fi
 
-curl -s https://openrouter.ai/api/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $OPENROUTER_API_KEY" \
-  --data "$(jq -n --arg q "${QUERY//\"}" --arg m "$MODEL" '{
-    "model": $m,
-    "messages": [
-      {
-        "role": "user",
-        "content": $q
-      }
-    ]
-  }')" | \
-  jq -r '
-    if .choices then
-      .choices[0].message.content
-    elif .data then
-      .data.output
+# Get terminal width with adjustment for Cursor environment
+TERM_WIDTH=$(tput cols)
+if [ "$TERM_WIDTH" -lt 100 ]; then
+    # When terminal is narrower than 100 columns, use 60 instead
+    TERM_WIDTH=60
+fi
+
+# Show model information if requested
+if [ "$SHOW_MODEL" = true ]; then
+    if [ "$USE_OLLAMA" = true ]; then
+        echo "Using Ollama with model: $MODEL" >&2
     else
-      "Error: Unexpected response format"
-    end
-  ' | \
-  bat --paging=never --style=plain -l markdown
+        echo "Using OpenRouter with model: $MODEL" >&2
+    fi
+fi
+
+if [ "$USE_OLLAMA" = true ]; then
+    # Check if Ollama is running
+    if ! curl -s -f "http://localhost:11434/" > /dev/null; then
+        echo "Error: Ollama is not running. Please start Ollama first." >&2
+        exit 1
+    fi
+    
+    # Create JSON payload with jq to properly escape special characters
+    MESSAGE_JSON=$(echo "$QUERY" | jq -Rs '.')
+    PAYLOAD=$(echo '{}' | jq --arg model "$MODEL" --arg content "$MESSAGE_JSON" '
+        {
+            model: $model,
+            stream: false,
+            messages: [
+                {
+                    role: "user",
+                    content: $content | fromjson
+                }
+            ]
+        }
+    ')
+    
+    # Call Ollama API
+    curl -s http://localhost:11434/api/chat \
+        -H "Content-Type: application/json" \
+        --data "$PAYLOAD" | \
+        jq -r 'if .message.content != null then .message.content else "" end' | \
+        fold -s -w $TERM_WIDTH | \
+        bat --paging=never --style=plain -l markdown
+
+else
+    # Use OpenRouter with improved JSON handling
+    MESSAGE_JSON=$(echo "$QUERY" | jq -Rs '.')
+    PAYLOAD=$(echo '{}' | jq --arg model "$MODEL" --arg content "$MESSAGE_JSON" '
+        {
+            model: $model,
+            messages: [
+                {
+                    role: "user",
+                    content: $content | fromjson
+                }
+            ]
+        }
+    ')
+
+    curl -s https://openrouter.ai/api/v1/chat/completions \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+        --data "$PAYLOAD" | \
+        jq -r '
+            if .choices then
+                .choices[0].message.content
+            elif .data then
+                .data.output
+            else
+                "Error: Unexpected response format from OpenRouter"
+            end
+        ' | fold -s -w $TERM_WIDTH | \
+        bat --paging=never --style=plain -l markdown
+fi
