@@ -24,6 +24,35 @@ fi
 # Parse arguments for model selection and other options
 SHOW_MODEL=false
 
+# Function to display usage information
+display_help() {
+    cat <<EOF
+Usage: openrouter [OPTIONS] PROMPT
+
+Send a prompt to an AI model via OpenRouter or Ollama.
+
+Options:
+  --model MODEL   Specify a model to use
+  --fast          Use wizardlm2 model (Ollama only)
+  --reason        Use deepseek-r1:70b model (Ollama only)
+  --show-model    Display which model is being used
+  --help          Display this help message and exit
+
+Examples:
+  openrouter "What is quantum computing?"
+  openrouter --fast "Tell me a joke"
+  openrouter --reason "Explain the theory of relativity"
+  openrouter --model llama3 "What's the weather like?"
+  echo "Write a poem about cats" | openrouter
+
+Notes:
+  - If OpenRouter API key is not set, Ollama will be used as fallback
+  - Default model for Ollama is qwq:latest
+  - Input can be provided as an argument or via stdin
+EOF
+    exit 0
+}
+
 while [[ $# -gt 0 ]]; do
     case $1 in
         --model)
@@ -45,6 +74,9 @@ while [[ $# -gt 0 ]]; do
         --show-model)
             SHOW_MODEL=true
             shift
+            ;;
+        --help)
+            display_help
             ;;
         *)
             # Collect remaining args for query
