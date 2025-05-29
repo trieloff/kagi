@@ -3,9 +3,9 @@ source "${XDG_CONFIG_HOME:-$HOME/.config}/kagi/config"
 
 # Check if there's input on stdin (pipe)
 if [ ! -t 0 ]; then
-    QUERY=$(cat | jq -R -s .)
+    QUERY=$(cat)
 else
-    QUERY=$(printf '%s' "$*" | jq -R -s .)
+    QUERY="$*"
 fi
 
 # Exit if no query provided
@@ -14,18 +14,21 @@ if [ -z "$QUERY" ]; then
     exit 1
 fi
 
-curl -s \
+JSON_PAYLOAD=$(jq -n --arg q "$QUERY" '{query: $q}')
+
+RAW_RESPONSE=$(curl -s \
   -H "Authorization: Bot $KAGI_API_KEY" \
   -H "Content-Type: application/json" \
-  --data "$(jq -n --arg q "${QUERY//\"}" '{"query": $q}')" \
-  https://kagi.com/api/v0/fastgpt | \
-  jq -r '
-    .data.output,
-    if (.data.references | length > 0) then
-      "\nReferences:",
-      (.data.references[] | "- [" + .title + "](" + .url + ")")
-    else
-      empty
-    end
-  ' | \
+  --data "$JSON_PAYLOAD" \
+  https://kagi.com/api/v0/fastgpt)
+
+echo "$RAW_RESPONSE" | jq -r '
+  .data.output,
+  if (.data.references | length > 0) then
+    "\nReferences:",
+    (.data.references[] | "- [" + .title + "](" + .url + ")")
+  else
+    empty
+  end
+' | \
   bat --paging=never --style=plain -l markdown
